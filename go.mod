@@ -1,4 +1,4 @@
-module github.com/zbblanton/simple-sensor-broker
+module github.com/zbblanton/simple_iot_broker
 
 go 1.13
 

@@ -6,8 +6,10 @@ import (
 	//"fmt"
 	"encoding/json"
 	"fmt"
+	"io/ioutil"
 	"math/rand"
 	"net/http"
+	"os"
 	"strings"
 	"time"
 
@@ -29,23 +31,10 @@ func RootHandler(w http.ResponseWriter, r *http.Request) {
 	w.Write([]byte("Hi there :)\n"))
 }
 
-// type User struct {
-// 	AgentIP    string
-// 	AgentPort  string
-// 	ServerKey  string
-// 	AgentKey   string
-// 	Containers map[string]string
-// 	Status     string
-// }
-
 type Device struct {
 	Name    string
 	Channel map[string]string
 }
-
-// func checkAccess(user, password string) {
-
-// }
 
 // https://gist.github.com/sambengtson/bc9f76331065f09e953f
 func checkAccess(next http.HandlerFunc) http.HandlerFunc {
@@ -64,41 +53,29 @@ func checkAccess(next http.HandlerFunc) http.HandlerFunc {
 			return
 		}
 
-		// does we have access to "/sensors/frontdoor/battery"?
-		// We need read to one or all: "/sensors/**", "/sensors/frontdoor/*","/sensors/frontdoor/**", "/sensors/frontdoor/battery"
-		granted := false
-
-		splitPath := strings.Split(r.URL.Path, "/")
-		splitPath = splitPath[1:] //Remove the first item which is blank
-		fmt.Println(splitPath)
-		fmt.Println(len(splitPath))
+		granted := false                                //Assume access is not granted
+		splitPath := strings.Split(r.URL.Path, "/")[1:] //Split AND remove the first item which is blank
 
 		//Read existing ACL if it exist
 		aclRules := make(map[string][]string)
-		aclRulesBytes, err := ds.Get("auth/acl/" + user)
-		// if deviceBytes == nil {
-		// 	http.Error(w, "Could not find device", http.StatusNotFound)
-		// 	return
-		// }
+		aclRulesBytes, err := ds.Get("broker/auth/acl/" + user)
+		if aclRulesBytes == nil {
+			http.Error(w, "Authorization failed", http.StatusUnauthorized)
+			return
+		}
 		err = json.Unmarshal(aclRulesBytes, &aclRules)
 		if err != nil {
-			fmt.Println("its right here right")
-			fmt.Println(err)
 			http.Error(w, "Could not unmarshal data", http.StatusInternalServerError)
 			return
 		}
 
-		//for aclPath, permissions := range aclRules {
 		for aclPath, permissions := range aclRules {
 			match := false
-			fmt.Println(permissions)
 			splitACLPath := strings.Split(aclPath, "/")
-			fmt.Println(splitACLPath)
 			for pathIndex, pathElement := range splitACLPath {
 				if pathElement == "**" {
 					match = true
 					break
-					//} else if pathElement == "*" && len(splitPath)-1 == pathIndex {
 				} else if pathElement == "*" {
 					if len(splitPath)-1 == pathIndex && len(splitACLPath)-1 == pathIndex {
 						match = true
@@ -120,14 +97,12 @@ func checkAccess(next http.HandlerFunc) http.HandlerFunc {
 			}
 
 			if match {
-				fmt.Println("Match found")
 				for _, method := range permissions {
 					if r.Method == method {
 						granted = true
 						break
 					}
 				}
-				//break
 			}
 
 			if granted {
@@ -139,30 +114,6 @@ func checkAccess(next http.HandlerFunc) http.HandlerFunc {
 			http.Error(w, "Authorization failed", http.StatusUnauthorized)
 			return
 		}
-		//fmt.Println(match)
-
-		// for each key { //x is access path we are testing, y is current acl we are testing
-		// 	split x by /
-		// 	for each element
-		// 		if y[0] == "**"
-		// 			granted = true
-		// 			break
-		// 		else if y[0] == "*" and last x
-		// 			granted = true
-		// 			break
-		// 		else if y[0] == x[0] // or y[0] == "*"
-		// 			continue
-		// 		else if y[0] == x[0] && last x && last y
-		// 			granted = true
-		// 			break
-		// 		else if y[0] == "*"
-		// 			continue
-		// 		else if len(x) - 1 == index
-		// 			break
-
-		// 	if granted
-		// 		break
-		// }
 
 		next.ServeHTTP(w, r)
 	})
@@ -232,8 +183,9 @@ func GetDeviceChannelDataHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	trimQuotes := strings.Trim(device.Channel[channel], "\"") //This could cause problems is the data actually should start and end with quotes
 	w.WriteHeader(http.StatusOK)
-	json.NewEncoder(w).Encode(device.Channel[channel])
+	w.Write([]byte(trimQuotes))
 	return
 }
 
@@ -310,101 +262,80 @@ func CreateACLRulesHandler(w http.ResponseWriter, r *http.Request) {
 	json.NewDecoder(r.Body).Decode(&aclRules)
 
 	aclRulesBytes, _ := json.Marshal(aclRules)
-	ds.Put("auth/acl/"+user, aclRulesBytes)
+	ds.Put("broker/auth/acl/"+user, aclRulesBytes)
 }
 
 func main() {
 	//Seed for token generation
 	rand.Seed(time.Now().UnixNano())
 
-	fmt.Println(generateTokenString())
-	fmt.Println(generateTokenString())
-	fmt.Println(generateTokenString())
-	fmt.Println(generateTokenString())
-	fmt.Println(generateTokenString())
-	fmt.Println(generateTokenString())
-
 	fmt.Println("Using file based datastore.")
 	ds = &FileDataStore{Path: "data.db"}
 	ds.Init()
 	defer ds.Close()
 
-	//tmp init stuff
+	//If admin token doesn't exist, create and print token out
 	if ok, _ := ds.IfExist("broker/auth/token/admin"); !ok {
-		//resp := Resp{false, "Cannot find container"}
-		resp := "Hello"
-		c1, err := json.Marshal(resp)
+		t := generateTokenString()
+		// fmt.Println("Please save this token, it will not be printed again.")
+		// fmt.Println("Token for admin: " + t)
+		tBytes, err := json.Marshal(t)
 		if err != nil {
 			fmt.Println(err)
 		}
 
-		ds.Put("broker/auth/token/admin", c1)
-		//ds.Put("broker/auth/acl/admin", accountBytes)
-	}
+		trimQuotesToken := strings.Trim(t, "\"")
+		err = ioutil.WriteFile("admin.token", []byte(trimQuotesToken), 0600)
+		if err != nil {
+			panic(err)
+		}
+		fmt.Println("Saved admin token as admin.token.")
 
-	var testme string
-	workerBytes, _ := ds.Get("broker/auth/token/admin")
-	json.Unmarshal(workerBytes, &testme)
-	fmt.Println(testme)
+		ds.Put("broker/auth/token/admin", tBytes)
+	}
+	//If admin ACL is not found then add it
+	if ok, _ := ds.IfExist("broker/auth/acl/admin"); !ok {
+		aclRules := make(map[string][]string)
+		aclRules["**"] = []string{"GET", "POST"}
+		aclRulesBytes, err := json.Marshal(aclRules)
+		if err != nil {
+			fmt.Println(err)
+		}
+
+		ds.Put("broker/auth/acl/admin", aclRulesBytes)
+	}
 
 	router := mux.NewRouter().StrictSlash(true)
 	router.HandleFunc("/", RootHandler)
-
 	router.HandleFunc("/register", checkAccess(RegisterDeviceHandler))
 	router.HandleFunc("/sensors/{sensor}", checkAccess(GetDeviceHandler))
 	router.HandleFunc("/sensors/{sensor}/{channel}", checkAccess(GetDeviceChannelDataHandler))
 	router.HandleFunc("/sensors/{sensor}/{channel}/set/{newValue}", checkAccess(SetDeviceChannelDataHandler))
-	//router.HandleFunc("/sensors/{sensor}/{somethingchannel}/set", checkAccess(GetDevicechannelSensor))
-	//router.HandleFunc("/sensors/{sensor}/contact", RootHandler)
-	//router.HandleFunc("/sensors/{sensor}/status", RootHandler) //Dont think we need /status. just do it at the sensorName level
-	//router.HandleFunc("/switch/{sensor}/battery", RootHandler)
-	//router.HandleFunc("/switch/{sensor}/contact", RootHandler)
-	//router.HandleFunc("/switch/{sensor}/status", RootHandler)
-	//router.HandleFunc("/auth/token/create", RootHandler)
-	router.HandleFunc("/auth/token/{user}", checkAccess(CreateTokenHandler)) //Maybe instead of create about just do a post to here
-	//router.HandleFunc("/auth/acl/{user}", checkAccess(CreateACLRulesHandler))
-	router.HandleFunc("/auth/acl/{user}", CreateACLRulesHandler)
-
-	// {
-	// 	"/sensor/**": "RW",
-	// 	"/sensor/frontdoor/*": "RW",
-	// 	"/sensor/frontdoor/battery": "R",
-	// }
-
-	// thing/sensors/battery
-	// thing/switches/
-	// Only a sensor broker for reading sensor data (will also need to set sensor data)
-	// maybe have types: percentage, boolean, string, number
-	// maybe for now only output raw text
-	// to register:
-	// {
-	// 	name: frontdoor
-	// 	channel: [
-	// 		battery,
-	// 		contact
-	// 	]
-	// }
-	// // status?:
-	// {
-	// 	name: frontdoor
-	// 	channel: {
-	// 		battery: 70,
-	// 		contact: open
-	// 	}
-	// }
-	// Maybe do an bearer token so taht we can have a username:token and tokens can be looked up by username
+	router.HandleFunc("/auth/token/{user}", checkAccess(CreateTokenHandler))
+	router.HandleFunc("/auth/acl/{user}", checkAccess(CreateACLRulesHandler))
 
 	handler := cors.Default().Handler(router)
 
-	//Setup server config
+	addr := os.Getenv("BROKER_HTTP_ADDR") //Blank means listen on all addresses
+	port := os.Getenv("BROKER_HTTP_PORT")
+	if port == "" {
+		port = "8888"
+	}
+	fmt.Println("Listening on: " + addr + ":" + port)
 	server := &http.Server{
-		//Addr:      serverIP + ":" + serverPort,
-		Addr:    ":8888",
+		Addr:    addr + ":" + port,
 		Handler: handler,
 	}
 
-	//Start API server
-	//err = server.ListenAndServeTLS(serverCert, serverKey)
-	err := server.ListenAndServe()
+	//Start server
+	var err error
+	serverCert := os.Getenv("BROKER_TLS_CERT_PATH")
+	serverKey := os.Getenv("BROKER_TLS_KEY_PATH")
+	if serverKey != "" && serverCert != "" {
+		err = server.ListenAndServeTLS(serverCert, serverKey)
+	} else {
+		err = server.ListenAndServe()
+	}
+
 	log.Fatal(err)
 }
