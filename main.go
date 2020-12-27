@@ -270,7 +270,11 @@ func main() {
 	rand.Seed(time.Now().UnixNano())
 
 	fmt.Println("Using file based datastore.")
-	ds = &FileDataStore{Path: "data.db"}
+	dbPath := os.Getenv("BROKER_DB_PATH")
+	if dbPath == "" {
+		dbPath = "data.db"
+	}
+	ds = &FileDataStore{Path: dbPath}
 	ds.Init()
 	defer ds.Close()
 
@@ -332,6 +336,7 @@ func main() {
 	serverCert := os.Getenv("BROKER_TLS_CERT_PATH")
 	serverKey := os.Getenv("BROKER_TLS_KEY_PATH")
 	if serverKey != "" && serverCert != "" {
+		fmt.Println("TLS enabled.")
 		err = server.ListenAndServeTLS(serverCert, serverKey)
 	} else {
 		err = server.ListenAndServe()
